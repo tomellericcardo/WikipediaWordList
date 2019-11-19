@@ -9,15 +9,15 @@ import random
 
 
 API_URL = 'http://%s.wikipedia.org/api/rest_v1/page/random/summary'
+SPECIAL = '\\!\"/()[]{}=?\'<>,;.:-—_+*@#«»'
 
 
 class WikipediaWordList:
 
-    def __init__(
-        self,
+    def __init__(self,
         pages = 100,
         lang = 'en',
-        special_chars = '\\!\"/()[]{}=?\'<>,;.:-—_+*@#«»',
+        special_chars = SPECIAL,
         min_length = 1,
         max_length = 0,
         threads = 1,
@@ -32,31 +32,37 @@ class WikipediaWordList:
         self.timeout = timeout
 
     def get_random_title(self):
-        # return wikipedia.random(self.pages)   # Not sure it's is random
-        return requests.get(API_URL % self.lang).json()['title']
+        # return wikipedia.random(self.pages)   # Not sure this is random
+        response = requests.get(API_URL % self.lang)
+        return response.json()['title']
 
     def get_page_content(self, title):
         page = wikipedia.page(title)
         return page.content
+
+    def valid_length(self, word):
+        m = self.min_length
+        M = self.max_length
+        l = len(word)
+        return (M == 0 or l <= M) and l >= m
 
     def format_line(self, line):
         wordlist = []
         for char in self.special_chars:
             line = line.replace(char, ' ')
         for word in line.split(' '):
-            if self.max_length == 0 or len(word) <= self.max_length:
-                if len(word) >= self.min_length:
-                    wordlist.append(word.lower())
+            if self.valid_length(word):
+                wordlist.append(word.lower())
         return wordlist
 
     def format_page(self, page_content):
         wordlist = []
         for line in page_content.split('\n'):
-            if line != '' and line[0] != '=':
+            if line != '' and line[0] != '=':   # Header lines look like '== Header =='
                 wordlist += self.format_line(line)
         return wordlist
 
-    def retrieve_words(self, i, wordlist, completed = None):
+    def retrieve_words(self, i, wordlist):
         try:
             title = self.get_random_title()
             print('Page #%d > %s' % (i + 1, title))
@@ -66,26 +72,25 @@ class WikipediaWordList:
             wordlist += words
         except:
             print('Page #%d > Something went wrong' % (i + 1))
-        finally:
-            if completed is not None:
-                completed[i] = True
+
+    def wait_for_responses(self):
+        i = 0
+        T = self.timeout
+        while threading.active_count() > 1 and (T == 0 or i < T):
+            sleep(1)
+            i += 1
 
     def generate_wordlist(self):
         wikipedia.set_lang(self.lang)
         wordlist = []
-        completed = []
         for i in range(self.pages):
-            completed.append(False)
             while threading.active_count() > self.threads:
                 sleep(1)
             threading.Thread(
                 target = self.retrieve_words,
-                args = (i, wordlist, completed)
+                args = (i, wordlist)
             ).start()
-        checks = 0
-        while False in completed and (self.timeout == 0 or checks < self.timeout):
-            sleep(1)
-            checks += 1
+        self.wait_for_responses()
         return wordlist
 
     def sort_wordlist(self, word_count):
@@ -120,12 +125,14 @@ class WikipediaWordList:
 
 if __name__ == '__main__':
 
-    usage = '''
+    help = '''
 
         Usage:          wwl.py [OPTIONS]
 
+
         Description:    Creates a list of words from Wikipedia's random pages,
                         and saves them sorted by their frequency.
+
 
         Options:        -h, --help
                         Shows this message.
@@ -137,7 +144,7 @@ if __name__ == '__main__':
                         Sets the language of the pages to retrieve (default "en").
 
                         -s, --special (STRING)
-                        Sets the special chars to ignore (default "\\\\!\\"/()[]{}=?\\'<>,;.:-—_+*@#«»").
+                        Sets the special chars to use as splitters (the space is always used, default "\\\\!\\"/()[]{}=?\\'<>,;.:-—_+*@#«»").
 
                         -m, --min (NUMBER)
                         Sets the minimum length of the words to process (default 1).
@@ -157,6 +164,7 @@ if __name__ == '__main__':
                         -w, --words (NUMBER)
                         Specifies the maximum number of words to save (0 for infinity, default 0).
 
+
         Example:        wwl.py -p 1000 -l it -m 8 -t 50 -w 100
                         Saves 100 most common words of 8 or more characters out of 1000 italian pages, using 50 threads.
 
@@ -165,7 +173,7 @@ if __name__ == '__main__':
     # Default parameters
     pages = 100
     lang = 'en'
-    special_chars = '\\!\"/()[]{}=?\'<>,;.:-—_+*@#«»'
+    special_chars = SPECIAL
     min_length = 1
     max_length = 0
     threads = 1
@@ -192,11 +200,11 @@ if __name__ == '__main__':
             ]
         )
     except getopt.GetoptError:
-        print(usage)
+        print(help)
         sys.exit()
     for opt, arg in opts:
         if opt in ['-h', '--help']:
-            print(usage)
+            print(help)
             sys.exit()
         elif opt in ['-p', '--pages']:
             pages = int(arg)
@@ -217,14 +225,17 @@ if __name__ == '__main__':
         elif opt in ['-w', '--words']:
             words = int(arg)
 
-    # Create
+    # Create wwl object
     wwl = WikipediaWordList(
-        pages = pages,
-        lang = lang,
-        min_length = min_length,
-        max_length = max_length,
-        threads = threads,
-        timeout = timeout
+        pages,
+        lang,
+        special_chars,
+        min_length,
+        max_length,
+        threads,
+        timeout
     )
+
+    # Run wwl and save the result
     wwl.save_sorted_wordlist(output, words)
     print('DONE!')
