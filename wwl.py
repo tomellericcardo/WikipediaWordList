@@ -43,7 +43,6 @@ class WikipediaWordList:
             logging.error('An error occured while getting a random title')
             return
 
-
     def get_page_content(self, title):
         try:
             page = wikipedia.page(title)
