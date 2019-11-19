@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import sys, getopt
+import logging
 import wikipedia
 import threading
 from time import sleep
 import requests
+import requests.exceptions as re
+import wikipedia.exceptions as we
 import random
 
 
@@ -33,12 +36,26 @@ class WikipediaWordList:
 
     def get_random_title(self):
         # return wikipedia.random(self.pages)   # Not sure this is random
-        response = requests.get(API_URL % self.lang)
-        return response.json()['title']
+        try:
+            response = requests.get(API_URL % self.lang)
+            return response.json()['title']
+        except re.RequestException as e:
+            logging.error('An error occured while getting a random title')
+            return
+
 
     def get_page_content(self, title):
-        page = wikipedia.page(title)
-        return page.content
+        try:
+            page = wikipedia.page(title)
+            return page.content
+        except we.DisambiguationError as e:
+            logging.debug('A disambiguation error occured while fetching the page "%s", choosing a random option' % title)
+            title = random.choice(e.options)
+            page = wikipedia.page(title)
+            return page.content
+        except we.WikipediaException as e:
+            logging.error('An error occured while fetching the page "%s"' % title)
+            return
 
     def valid_length(self, word):
         m = self.min_length
@@ -63,29 +80,39 @@ class WikipediaWordList:
         return wordlist
 
     def retrieve_words(self, i, wordlist):
-        try:
-            title = self.get_random_title()
-            print('Page #%d > %s' % (i + 1, title))
-            page_content = self.get_page_content(title)
-            words = self.format_page(page_content)
-            print('Page #%d > Retrieved %d words' % (i + 1, len(words)))
-            wordlist += words
-        except:
-            print('Page #%d > Something went wrong' % (i + 1))
+        title = self.get_random_title()
+        if not title:
+            return
+        logging.debug('Page #%d : "%s"' % (i + 1, title))
+        page_content = self.get_page_content(title)
+        if not page_content:
+            return
+        words = self.format_page(page_content)
+        logging.info('Page #%d : "%s" : Retrieved %d words' % (i + 1, title, len(words)))
+        wordlist += words
 
     def wait_for_responses(self):
         i = 0
         T = self.timeout
-        while threading.active_count() > 1 and (T == 0 or i < T):
+        t = threading.active_count()
+        while t > 1:
+            if T != 0 and i >= T:
+                logging.debug('Timeout')
+                break
+            logging.debug('Waiting for %d threads to finish' % (t - 1))
             sleep(1)
+            t = threading.active_count()
             i += 1
 
     def generate_wordlist(self):
         wikipedia.set_lang(self.lang)
         wordlist = []
         for i in range(self.pages):
-            while threading.active_count() > self.threads:
+            t = threading.active_count()
+            while t > self.threads:
+                logging.debug('Reached active threads limit: %d' % (t - 1))
                 sleep(1)
+                t = threading.active_count()
             threading.Thread(
                 target = self.retrieve_words,
                 args = (i, wordlist)
@@ -94,7 +121,7 @@ class WikipediaWordList:
         return wordlist
 
     def sort_wordlist(self, word_count):
-        print('Sorting %d unique words by frequency...' % len(word_count))
+        logging.info('Sorting %d unique words by their frequency' % len(word_count))
         sorted_wordlist = []
         for word, count in word_count.items():
             sorted_wordlist.append((count, word))
@@ -115,7 +142,7 @@ class WikipediaWordList:
         sorted_wordlist = self.generate_sorted_wordlist()
         words = len(sorted_wordlist)
         max = words if n == 0 or n > words else n
-        print('Saving %d unique words...' % words)
+        logging.info('Saving %d unique words in %s' % (max, filename))
         f = open(filename, 'w', encoding = 'utf-8')
         for i in range(max):
             word_freq = sorted_wordlist[i]
@@ -143,30 +170,33 @@ if __name__ == '__main__':
                         -l, --lang (ISO-CODE)
                         Sets the language of the pages to retrieve (default "en").
 
-                        -s, --special (STRING)
+                        -s, --special (CHARACTERS)
                         Sets the special chars to use as splitters (the space is always used, default "\\\\!\\"/()[]{}=?\\'<>,;.:-—_+*@#«»").
 
-                        -m, --min (NUMBER)
+                        -m, --min (LENGTH)
                         Sets the minimum length of the words to process (default 1).
 
-                        -M, --max (NUMBER)
+                        -M, --max (LENGTH)
                         Sets the maximum length of the words to process (0 for infinity, default 0).
 
                         -t, --threads (NUMBER)
                         Sets the maximum amount of threads working simultanously to retrieve pages (default 1).
 
-                        -T, --timeout (NUMBER)
-                        Sets the maximum time (in seconds) to wait for the threads to retrieve the pages once the last thread started (0 for infinity, default 30).
+                        -T, --timeout (SECONDS)
+                        Sets the maximum time to wait for the threads to retrieve the pages once the last thread started (0 for infinity, default 30).
 
-                        -o, --output (FILENAME)
-                        Specifies the output file (default "output.txt").
+                        -o, --output (PATH)
+                        Specifies the output file location (default "output.txt").
 
                         -w, --words (NUMBER)
                         Specifies the maximum number of words to save (0 for infinity, default 0).
 
+                        -d, --debug
+                        Shows debug level logs.
+
 
         Example:        wwl.py -p 1000 -l it -m 8 -t 50 -w 100
-                        Saves 100 most common words of 8 or more characters out of 1000 italian pages, using 50 threads.
+                        Saves 100 most common words of 8 or more characters out of 1000 italian pages using 50 threads.
 
     '''
 
@@ -180,12 +210,13 @@ if __name__ == '__main__':
     timeout = 30
     output = 'output.txt'
     words = 0
+    logging_level = 'INFO'
 
     # Get user arguments
     try:
         opts, args = getopt.getopt(
             sys.argv[1:],
-            'hp:l:s:m:M:t:T:o:w:',
+            'hp:l:s:m:M:t:T:o:w:d',
             [
                 'help',
                 'pages=',
@@ -196,7 +227,8 @@ if __name__ == '__main__':
                 'threads=',
                 'timeout=',
                 'output=',
-                'words='
+                'words=',
+                'debug'
             ]
         )
     except getopt.GetoptError:
@@ -224,6 +256,12 @@ if __name__ == '__main__':
             output = arg
         elif opt in ['-w', '--words']:
             words = int(arg)
+        elif opt in ['-d', '--debug']:
+            logging_level = 'DEBUG'
+
+    # Set up logging
+    log_format = '%(asctime)s [%(levelname)s]  %(message)s'
+    logging.basicConfig(level = logging_level, format = log_format)
 
     # Create wwl object
     wwl = WikipediaWordList(
@@ -238,4 +276,4 @@ if __name__ == '__main__':
 
     # Run wwl and save the result
     wwl.save_sorted_wordlist(output, words)
-    print('DONE!')
+    logging.info('DONE!')
